@@ -1,6 +1,12 @@
 package gtsr
 
-import "github.com/nlopes/slack"
+import (
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nlopes/slack"
+)
 
 type GlobalMessenger struct {
 	API *slack.Client
@@ -15,56 +21,81 @@ func (msngr *Messenger) Channel() string {
 	return msngr.channel
 }
 
-type Message struct {
-	Text    string
-	Actions []slack.AttachmentAction
+type OutgoingMessage struct {
+	text    string
+	actions []slack.AttachmentAction
 
 	messenger *GlobalMessenger
 	channel   string
 }
 
-func (gm *GlobalMessenger) NewMessage(text string, channel string) *Message {
-	return &Message{
-		Text:    text,
+type IncomingMessage struct {
+	Text string
+
+	channel   string
+	timestamp string
+
+	sb *SlackBot
+}
+
+func (inmsg *IncomingMessage) TimeStamp() time.Time {
+	millis, _ := strconv.Atoi(strings.Split(inmsg.timestamp, ".")[0])
+	return time.Unix(int64(millis), 0)
+}
+
+func (inmsg *IncomingMessage) Channel() string {
+	return inmsg.sb.Channels[inmsg.channel].Name
+}
+
+func (inmsg *IncomingMessage) AddReaction(react string) error {
+	return inmsg.sb.API.AddReaction(react, slack.ItemRef{
+		Channel:   inmsg.channel,
+		Timestamp: inmsg.timestamp,
+	})
+}
+
+func (gm *GlobalMessenger) NewMessage(text string, channel string) *OutgoingMessage {
+	return &OutgoingMessage{
+		text:    text,
 		channel: channel,
 
 		messenger: gm,
 	}
 }
 
-func (msnger *Messenger) NewMessage(text string) *Message {
-	return &Message{
-		Text:    text,
+func (msnger *Messenger) NewMessage(text string) *OutgoingMessage {
+	return &OutgoingMessage{
+		text:    text,
 		channel: msnger.channel,
 
 		messenger: &msnger.GlobalMessenger,
 	}
 }
 
-func (msg *Message) Send() error {
+func (msg *OutgoingMessage) Send() error {
 	params := slack.PostMessageParameters{
 		AsUser: true,
 		Attachments: []slack.Attachment{slack.Attachment{
-			Actions:    msg.Actions,
+			Actions:    msg.actions,
 			CallbackID: randStringRunes(8),
 		}},
 	}
 
-	_, _, err := msg.messenger.API.PostMessage(msg.channel, msg.Text, params)
+	_, _, err := msg.messenger.API.PostMessage(msg.channel, msg.text, params)
 
 	return err
 }
 
-func (msg *Message) AddButton(label string, id string) {
+func (msg *OutgoingMessage) AddButton(label string, id string) {
 	action := slack.AttachmentAction{
 		Name: label,
 		Text: label,
 		Type: "button",
 	}
-	msg.Actions = append(msg.Actions, action)
+	msg.actions = append(msg.actions, action)
 }
 
-func (msg *Message) AddDropdown(label string, options []string) {
+func (msg *OutgoingMessage) AddDropdown(label string, options []string) {
 	action := slack.AttachmentAction{
 		Name: label,
 		Text: label,
@@ -80,7 +111,7 @@ func (msg *Message) AddDropdown(label string, options []string) {
 		action.Options = append(action.Options, aopt)
 	}
 
-	msg.Actions = append(msg.Actions, action)
+	msg.actions = append(msg.actions, action)
 }
 
 func (gm *GlobalMessenger) Scope(channel string) *Messenger {

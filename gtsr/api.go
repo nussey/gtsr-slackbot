@@ -12,11 +12,17 @@ var rngRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ12345
 
 // TODO(nussey): Add authentication layer for user permissions
 
+const (
+	DM      = 'D'
+	ChanMsg = 'C'
+)
+
 type SlackBot struct {
 	APIKey string
 
-	API *slack.Client
-	RTM *slack.RTM
+	API     *slack.Client
+	RTM     *slack.RTM
+	running bool
 
 	Users    map[string]*slack.User
 	Channels map[string]*slack.Channel
@@ -30,7 +36,7 @@ type SlackPlugin interface {
 	Init() *PluginConfig // Set up the plugin
 	Teardown()
 
-	ParseMessage(string, *Messenger) error
+	ParseMessage(*IncomingMessage, *Messenger) error
 }
 
 type PluginConfig struct {
@@ -86,9 +92,6 @@ func InitSlack(key string) *SlackBot {
 		API: bot.API,
 	}
 
-	bot.fetchChannels()
-	bot.fetchUsers()
-
 	return bot
 }
 
@@ -110,17 +113,23 @@ func (sb *SlackBot) ServeSlack() error {
 			// Ignore hello
 
 		case *slack.ConnectedEvent:
-			// Ignore connection events
+			sb.fetchChannels()
+			sb.fetchUsers()
 
 		case *slack.MessageEvent:
 			fmt.Println(ev.Channel)
 			if ev.User == sb.RTM.GetInfo().User.ID {
 				continue
 			}
-			if ev.Channel[0] == 'C' {
+
+			msgType := ev.Channel[0]
+
+			if msgType == ChanMsg {
 				sb.parseMessage(ev)
 			}
-			// fmt.Println("User " + sb.Users[ev.User].Name + " said: " + ev.Text)
+			if msgType == DM {
+				sb.dispatchConversation(ev)
+			}
 
 		case *slack.PresenceChangeEvent:
 			// Ignore presence change events
@@ -146,18 +155,29 @@ func (sb *SlackBot) parseMessage(ev *slack.MessageEvent) {
 	channel := sb.Channels[ev.Channel]
 	scopedMessenger := sb.GM.Scope(channel.Name)
 
+	msg := &IncomingMessage{
+		Text: ev.Text,
+
+		channel:   ev.Channel,
+		timestamp: ev.Timestamp,
+
+		sb: sb,
+	}
+
 	for _, plugin := range sb.Plugins {
 		// TODO(nussey): Handle errors
-		plugin.ParseMessage(ev.Text, scopedMessenger)
+		plugin.ParseMessage(msg, scopedMessenger)
 	}
+}
+
+func (sb *SlackBot) dispatchConversation(ev *slack.MessageEvent) {
+
 }
 
 func (sb *SlackBot) fetchUsers() error {
 	sb.Users = make(map[string]*slack.User)
-	users, err := sb.API.GetUsers()
-	if err != nil {
-		return err
-	}
+	users := sb.RTM.GetInfo().Users
+
 	for user := range users {
 		sb.Users[users[user].ID] = &users[user]
 	}
@@ -167,10 +187,8 @@ func (sb *SlackBot) fetchUsers() error {
 
 func (sb *SlackBot) fetchChannels() error {
 	sb.Channels = make(map[string]*slack.Channel)
-	chans, err := sb.API.GetChannels(true)
-	if err != nil {
-		return err
-	}
+	chans := sb.RTM.GetInfo().Channels
+
 	for channel := range chans {
 		sb.Channels[chans[channel].ID] = &chans[channel]
 	}
