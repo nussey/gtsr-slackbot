@@ -1,27 +1,33 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 
-	"github.com/nlopes/slack"
+	"github.com/nussey/gtsr-slackbot/gtsr"
+	"github.com/nussey/gtsr-slackbot/plugins/helptext"
 )
 
+const keyFileLocation = "./keys.json"
+
+type KeysFile struct {
+	SlackAPIKey string
+}
+
+// Uptime plugin
+
 func main() {
-	fmt.Println("Foobar")
-
-	api := slack.New("xoxb-289010713271-SeWO3xt6keY6udA8kkPIkyc6")
-	users, err := api.GetUsers()
+	raw, err := ioutil.ReadFile(keyFileLocation)
 	if err != nil {
-		fmt.Printf("%s\n", err)
-		return
-	}
-	for _, user := range users {
-		fmt.Printf("ID: %s, Fullname: %s, Email: %s\n", user.ID, user.Profile.RealName, user.Profile.Email)
+		panic(err)
 	}
 
-	rtm := api.NewRTM()
-	go rtm.ManageConnection()
+	var keys = &KeysFile{}
+	json.Unmarshal(raw, keys)
 
-	rtm.SendMessage(rtm.NewOutgoingMessage("Hello world", "U2PVAD9B7"))
-
+	fmt.Println(keys.SlackAPIKey)
+	bot := gtsr.InitSlack(keys.SlackAPIKey)
+	bot.AddPlugin(&helptext.HelpTextBot{})
+	bot.ServeSlack()
 }
