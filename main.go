@@ -7,6 +7,7 @@ import (
 	"github.com/nussey/gtsr-slackbot/gtsr"
 	"github.com/nussey/gtsr-slackbot/plugins/helptext"
 	"github.com/nussey/gtsr-slackbot/plugins/ryanbot"
+	"github.com/nussey/gtsr-slackbot/plugins/sysadmin"
 )
 
 const keyFileLocation = "./keys.json"
@@ -26,8 +27,11 @@ func main() {
 	var keys = &KeysFile{}
 	json.Unmarshal(raw, keys)
 
-	bot := gtsr.InitSlack(keys.SlackAPIKey)
+	bot := gtsr.InitSlack(keys.SlackAPIKey, "")
+
 	bot.AddPlugin(&helptext.HelpTextBot{})
 	bot.AddPlugin(&ryanbot.RyanBot{})
+	bot.AddPlugin(&sysadmin.SysAdminBot{})
+
 	bot.ServeSlack()
 }

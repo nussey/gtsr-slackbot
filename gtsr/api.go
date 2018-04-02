@@ -1,3 +1,32 @@
+// Copyright Alex Nussey
+// All Rights Reserved
+
+// Package gtsr provides a wrapper around the Slack API
+//
+// About
+//
+// The gtsr (temporary name) package is designed to be an extremely
+// easy to use wrapper around the slack API to enable rapid development
+// of relatively complex "Slack Bots" plugins. It currently takes
+// advantage of the Real Time Messenger (RTM) and Slack Web APIS,
+// though the Subscriptions model may be of use in the future. Currently,
+// the github.com/nlopes/slack package serves as a middle man for
+// authentication and masrhalling.
+//
+// The current UX implementation is built around the idea of a Bot User. All
+// user interactions will take place through regular messages and dms involving
+// the bot. Consuming this API allows the bot user to implement 3 core concepts:
+// message responses, direct message "conversations", and time triggered
+// "cron jobs".
+//
+// Usage
+//
+// The consumer of this API must implement at least two distinct sections of code
+// to get up and running. First, plugin(s) should be built corresponding to the
+// spec/interfaces described below. Second, a SlackBot should be instantiated with
+// all of the custom plugins and provided with the necessary credentials. Hosting
+// the slack bot requires a public facing IP (or a tunnel program such as ngrok) to
+// be able to recieve callbacks for interactive messages
 package gtsr
 
 import (
@@ -10,132 +39,190 @@ import (
 
 var rngRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
 
-// TODO(nussey): Add authentication layer for user permissions
-
 const (
-	DM      = 'D'
-	ChanMsg = 'C'
+	dm      = 'D'
+	chanMsg = 'C'
 )
 
-type SlackBot struct {
-	APIKey string
+const helpText = "Hi, I'm Clippy, your Solar Racing Assistant! What can I help you with today?"
 
-	API     *slack.Client
-	RTM     *slack.RTM
+// A SlackBot is the top level entity for the gtsr slack API.
+// The zero value is useless - get a SlackBot from InitSlack()
+type SlackBot struct {
+	apikey string
+
+	api     *slack.Client
+	rtm     *slack.RTM
 	running bool
 
-	Users    map[string]*slack.User
-	Channels map[string]*slack.Channel
+	users    map[string]*slack.User
+	channels map[string]*slack.Channel
+	dms      map[string]*slack.User
 
-	GM *GlobalMessenger
+	gm *globalMessenger
 
-	Plugins []SlackPlugin
+	plugins []SlackPlugin
+
+	topics       map[string]*ConvoTopic
+	converations map[string]*conversation
 }
 
+// SlackPlugin defins a common method interface all plugins
+// must conform to
 type SlackPlugin interface {
+	// Init should return the accurate and complete configuration for
+	// the plugin
 	Init() *PluginConfig // Set up the plugin
+	// Teardown gives the developer the opportunity to destruct their
+	// plugin. May be useful is caching in front of a persistent
+	// datastore of some kind
 	Teardown()
 
+	// ParseMessage is called for every new message sent in a
+	// channel the SlackBot is a member of
 	ParseMessage(*IncomingMessage, *Messenger) error
 }
 
+// A PluginConfig describes the attributes of a plugin, which features
+// it uses, and where to send requests for those features
 type PluginConfig struct {
-	Name        string
+	// Full name of the plugin, this may includes spaces and special characters
+	Name string
+	// Description of the plugin's functionality
 	Description string
-	Version     string
+	// Current version of the plugin (1.0, 2.3 format)
+	Version string
 
+	// Enables the Conversation feature for this plugin
 	FeatureConvo bool
-	Topics       []*ConvoTopic
+	// List of available topics of conversation - must be non
+	// empty if the feature is enabled
+	Topics []*ConvoTopic
 
+	// Enables the Cron Job feature for this plugin
 	FeatureChron bool
-	Jobs         []*CronJob
+	// List of registered Cron Jobs for this plugin - must be
+	// non empty if the feature is enabled
+	Jobs []*CronJob
 }
 
+// A CronJob representes a specific task to be executed at a given interval.
+// These jobs need not be bound to the recieving of messages or DMs. Use cases
+// may include a Calendar integration, attendance trigger, etc.
 type CronJob struct {
-	Name     string
+	// Human friendly name of the job
+	Name string
+	// Interval of time between executions
 	Interval time.Duration
 
+	// Action to be performed every Interval amount of time
 	// All cron actions must be fully threadsafe
 	Action func(string) error
 }
 
-type ConvoTopic struct {
-	Name  string
-	Label string
-
-	// All action functions must be fully threadsafe
-	Action func(User) error
-}
-
-type User struct {
-	Name   string
-	Handle string
-	Perms  Permissions
-}
-
+// A Permissions struct enumerates which permissions are available within
+// the current scope. This will be exanded on later
 type Permissions struct {
 	Admin       bool
 	Exec        bool
 	SubteamLead bool
 }
 
-func InitSlack(key string) *SlackBot {
+// InitSlack is the main entry point to the gtsr slack API. The key parameter
+// expects a valid slack API key with all the necessary scopes, and
+// verificationToken is the shared secret provided by slack to verify
+// the authenticity of interactive message callbacks
+func InitSlack(key string, verificationToken string) *SlackBot {
 	// TODO(nussey): Move off of the global RNG
 	rand.Seed(time.Now().UnixNano())
 
 	bot := &SlackBot{
-		APIKey: key,
-		API:    slack.New(key),
+		apikey: key,
+		api:    slack.New(key),
+
+		converations: make(map[string]*conversation),
+		topics:       make(map[string]*ConvoTopic),
 	}
-	bot.RTM = bot.API.NewRTM()
-	bot.GM = &GlobalMessenger{
-		API: bot.API,
+	bot.rtm = bot.api.NewRTM()
+	bot.gm = &globalMessenger{
+		API: bot.api,
 	}
 
 	return bot
 }
 
+// AddPlugin registeres a plugin with the Slack Bot. Make
+// all of these calls before ServeSlack()
 func (sb *SlackBot) AddPlugin(plugin SlackPlugin) {
-	plugin.Init()
+	if sb.running {
+		panic("Register plugins before starting the Slack Bot")
+	}
 
-	sb.Plugins = append(sb.Plugins, plugin)
+	config := plugin.Init()
+	if config.FeatureConvo {
+		for _, topic := range config.Topics {
+			if _, ok := sb.topics[topic.ID]; ok {
+				panic("Can't load multiple plugins that use the same conversation ID")
+			}
+			sb.topics[topic.ID] = topic
+		}
+	}
+
+	sb.plugins = append(sb.plugins, plugin)
 }
 
+func (sb *SlackBot) refreshData() {
+	sb.fetchChannels()
+	sb.fetchUsers()
+	sb.fetchDMs()
+}
+
+// ServeSlack is a blocking function that handles all network transactions
+// for the Slack Bot instance
 func (sb *SlackBot) ServeSlack() error {
-	go sb.RTM.ManageConnection()
+	if sb.running {
+		panic("There is already an instance of this Slack Bot running! Create a new instance to run two concurrently!")
+	}
 
-	// NewMessage("test").Send("testing", sb.API)
-	// TODO MAKE SURE THE MESSAGE IS NOT COMING FROM MYSELF
+	sb.running = true
 
-	for msg := range sb.RTM.IncomingEvents {
+	go sb.rtm.ManageConnection()
+	go handleInteractiveMessages()
+
+	for msg := range sb.rtm.IncomingEvents {
 		switch ev := msg.Data.(type) {
 		case *slack.HelloEvent:
-			// Ignore hello
+			sb.refreshData()
 
 		case *slack.ConnectedEvent:
-			sb.fetchChannels()
-			sb.fetchUsers()
+			sb.refreshData()
+			fmt.Println("We are off!")
 
 		case *slack.MessageEvent:
 			fmt.Println(ev.Channel)
-			if ev.User == sb.RTM.GetInfo().User.ID {
+			if ev.User == sb.rtm.GetInfo().User.ID {
+				continue
+			}
+			// Completely ignore threads for now
+			// TODO(nussey): support threads
+			if ev.ThreadTimestamp != "" {
 				continue
 			}
 
 			msgType := ev.Channel[0]
 
-			if msgType == ChanMsg {
+			if msgType == chanMsg {
 				sb.parseMessage(ev)
 			}
-			if msgType == DM {
+			if msgType == dm {
 				sb.dispatchConversation(ev)
 			}
 
-		case *slack.PresenceChangeEvent:
-			// Ignore presence change events
+		case *slack.ChannelJoinedEvent:
+			sb.refreshData()
 
-		case *slack.LatencyReport:
-			// Ignore incoming latency reports
+		case *slack.IMCreatedEvent:
+			sb.refreshData()
 
 		case *slack.RTMError:
 			fmt.Printf("Error: %s\n", ev.Error())
@@ -152,8 +239,8 @@ func (sb *SlackBot) ServeSlack() error {
 }
 
 func (sb *SlackBot) parseMessage(ev *slack.MessageEvent) {
-	channel := sb.Channels[ev.Channel]
-	scopedMessenger := sb.GM.Scope(channel.Name)
+	channel := sb.channels[ev.Channel]
+	scopedMessenger := sb.gm.scope(channel.Name)
 
 	msg := &IncomingMessage{
 		Text: ev.Text,
@@ -164,36 +251,40 @@ func (sb *SlackBot) parseMessage(ev *slack.MessageEvent) {
 		sb: sb,
 	}
 
-	for _, plugin := range sb.Plugins {
-		// TODO(nussey): Handle errors
-		plugin.ParseMessage(msg, scopedMessenger)
+	for _, plugin := range sb.plugins {
+		// TODO(nussey): much better error handling
+		err := plugin.ParseMessage(msg, scopedMessenger)
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 }
 
-func (sb *SlackBot) dispatchConversation(ev *slack.MessageEvent) {
-
-}
-
-func (sb *SlackBot) fetchUsers() error {
-	sb.Users = make(map[string]*slack.User)
-	users := sb.RTM.GetInfo().Users
+func (sb *SlackBot) fetchUsers() {
+	sb.users = make(map[string]*slack.User)
+	users := sb.rtm.GetInfo().Users
 
 	for user := range users {
-		sb.Users[users[user].ID] = &users[user]
+		sb.users[users[user].ID] = &users[user]
 	}
-
-	return nil
 }
 
-func (sb *SlackBot) fetchChannels() error {
-	sb.Channels = make(map[string]*slack.Channel)
-	chans := sb.RTM.GetInfo().Channels
+func (sb *SlackBot) fetchChannels() {
+	sb.channels = make(map[string]*slack.Channel)
+	chans := sb.rtm.GetInfo().Channels
 
 	for channel := range chans {
-		sb.Channels[chans[channel].ID] = &chans[channel]
+		sb.channels[chans[channel].ID] = &chans[channel]
 	}
+}
 
-	return nil
+func (sb *SlackBot) fetchDMs() {
+	sb.dms = make(map[string]*slack.User)
+	dms := sb.rtm.GetInfo().IMs
+
+	for dm := range dms {
+		sb.dms[dms[dm].ID] = sb.users[dms[dm].User]
+	}
 }
 
 func randStringRunes(n int) string {

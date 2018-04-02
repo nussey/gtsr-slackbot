@@ -17,7 +17,7 @@ var clippyText = "Hi"
 
 func (ht *HelpTextBot) Init() *gtsr.PluginConfig {
 	faq := &gtsr.ConvoTopic{
-		Name:  "FAQ",
+		ID:    "FAQ",
 		Label: "Frequently Asked Questions",
 
 		Action: ht.FAQ,
@@ -42,7 +42,7 @@ func (ht *HelpTextBot) Teardown() {
 }
 
 func (ht *HelpTextBot) ParseMessage(msg *gtsr.IncomingMessage, messenger *gtsr.Messenger) error {
-	if Match_NetworkDrive(msg.Text) {
+	if match_NetworkDrive(msg.Text) {
 		// TODO(nussey): send an etherial message first asking if they are curious
 		return messenger.NewMessage(networkDriveText).Send()
 	}
@@ -50,13 +50,12 @@ func (ht *HelpTextBot) ParseMessage(msg *gtsr.IncomingMessage, messenger *gtsr.M
 	return nil
 }
 
-func Match_NetworkDrive(msg string) bool {
+func match_NetworkDrive(msg string) bool {
 	// TODO(nussey): actually scan the words and see if they were asking about the network drive
 	msg = strings.ToLower(msg)
 	return strings.Contains(msg, "network") && strings.Contains(msg, "drive")
 }
 
-func (ht *HelpTextBot) FAQ(usr gtsr.User) error {
-
+func (ht *HelpTextBot) FAQ(usr string) error {
 	return nil
 }
