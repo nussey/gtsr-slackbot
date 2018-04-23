@@ -17,8 +17,9 @@ var clippyText = "Hi"
 
 func (ht *HelpTextBot) Init() *gtsr.PluginConfig {
 	faq := &gtsr.ConvoTopic{
-		ID:    "FAQ",
-		Label: "Frequently Asked Questions",
+		ID:          "FAQ",
+		Label:       "Frequently Asked Questions",
+		Permissions: &gtsr.Permissions{},
 
 		Action: ht.FAQ,
 	}
@@ -31,8 +32,8 @@ func (ht *HelpTextBot) Init() *gtsr.PluginConfig {
 		FeatureConvo: true,
 		Topics:       []*gtsr.ConvoTopic{faq},
 
-		FeatureChron: false,
-		Jobs:         []*gtsr.CronJob{},
+		FeatureCron: false,
+		Jobs:        []*gtsr.CronJob{},
 	}
 
 }
@@ -56,6 +57,7 @@ func match_NetworkDrive(msg string) bool {
 	return strings.Contains(msg, "network") && strings.Contains(msg, "drive")
 }
 
-func (ht *HelpTextBot) FAQ(usr string) error {
+func (ht *HelpTextBot) FAQ(messenger *gtsr.Messenger) error {
+	messenger.NewMessage("Hello, this is FAQ").Send()
 	return nil
 }

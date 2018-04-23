@@ -10,18 +10,59 @@ type SysAdminBot struct {
 }
 
 func (sa *SysAdminBot) Init() *gtsr.PluginConfig {
+	debug := &gtsr.ConvoTopic{
+		ID:          "debug",
+		Label:       "Debugger",
+		Permissions: &gtsr.Permissions{},
+
+		Action: sa.debugger,
+	}
+
+	poker := &gtsr.CronJob{
+		ID:   "poker",
+		Name: "Developer Poker",
+
+		Spec:   "@every 15m",
+		Action: sa.poke,
+	}
+
 	return &gtsr.PluginConfig{
 		Name:        "SysAdmin Bot",
 		Description: "Helps plugin developers see what is going on inside clippy",
 		Version:     "1.0",
 
-		FeatureConvo: false,
-		Topics:       []*gtsr.ConvoTopic{},
+		FeatureConvo: true,
+		Topics:       []*gtsr.ConvoTopic{debug},
 
-		FeatureChron: false,
-		Jobs:         []*gtsr.CronJob{},
+		FeatureCron: true,
+		Jobs:        []*gtsr.CronJob{poker},
 	}
 
+}
+
+func (sa *SysAdminBot) debugger(messenger *gtsr.Messenger) error {
+	msg := messenger.NewMessage("What's up hackerman?")
+	msg.AddButton("Ping").AddButton("Pong")
+	msg.AddDropdown("Foobar", []string{"bar", "foo"})
+	msg.Send()
+
+	cont, rsp := messenger.AwaitResponse()
+	if !cont {
+		messenger.NewMessage("Really? You ignoring me?").Send()
+		return nil
+	}
+
+	messenger.UpdateLastMessage(rsp+", really?", gtsr.ColorGood)
+	messenger.NewMessage("See? Now I can do stuff with your response, including ask another question").Send()
+	return nil
+}
+
+func (sa *SysAdminBot) poke(gm *gtsr.GlobalMessenger) error {
+	gm.NewConversation("nussey", func(messenger *gtsr.Messenger) error {
+		return messenger.NewMessage("CODE FASTER!").Send()
+	})
+
+	return nil
 }
 
 func (sa *SysAdminBot) Teardown() {

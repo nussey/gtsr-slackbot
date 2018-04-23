@@ -13,7 +13,8 @@ import (
 const keyFileLocation = "./keys.json"
 
 type KeysFile struct {
-	SlackAPIKey string
+	SlackAPIKey            string
+	SlackVerificationToken string
 }
 
 // Uptime plugin
@@ -27,7 +28,7 @@ func main() {
 	var keys = &KeysFile{}
 	json.Unmarshal(raw, keys)
 
-	bot := gtsr.InitSlack(keys.SlackAPIKey, "")
+	bot := gtsr.InitSlack(keys.SlackAPIKey, keys.SlackVerificationToken)
 
 	bot.AddPlugin(&helptext.HelpTextBot{})
 	bot.AddPlugin(&ryanbot.RyanBot{})

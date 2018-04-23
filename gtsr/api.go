@@ -32,9 +32,12 @@ package gtsr
 import (
 	"fmt"
 	"math/rand"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/nlopes/slack"
+	"github.com/robfig/cron"
 )
 
 var rngRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890")
@@ -50,21 +53,23 @@ const helpText = "Hi, I'm Clippy, your Solar Racing Assistant! What can I help y
 // The zero value is useless - get a SlackBot from InitSlack()
 type SlackBot struct {
 	apikey string
+	token  string
 
-	api     *slack.Client
-	rtm     *slack.RTM
-	running bool
+	api       *slack.Client
+	rtm       *slack.RTM
+	scheduler *cron.Cron
+	running   bool
 
 	users    map[string]*slack.User
 	channels map[string]*slack.Channel
-	dms      map[string]*slack.User
+	ims      map[string]*slack.User
 
-	gm *globalMessenger
+	gm *GlobalMessenger
 
 	plugins []SlackPlugin
 
-	topics       map[string]*ConvoTopic
-	converations map[string]*conversation
+	topics map[string]*ConvoTopic
+	crons  map[string]*CronJob
 }
 
 // SlackPlugin defins a common method interface all plugins
@@ -100,24 +105,10 @@ type PluginConfig struct {
 	Topics []*ConvoTopic
 
 	// Enables the Cron Job feature for this plugin
-	FeatureChron bool
+	FeatureCron bool
 	// List of registered Cron Jobs for this plugin - must be
 	// non empty if the feature is enabled
 	Jobs []*CronJob
-}
-
-// A CronJob representes a specific task to be executed at a given interval.
-// These jobs need not be bound to the recieving of messages or DMs. Use cases
-// may include a Calendar integration, attendance trigger, etc.
-type CronJob struct {
-	// Human friendly name of the job
-	Name string
-	// Interval of time between executions
-	Interval time.Duration
-
-	// Action to be performed every Interval amount of time
-	// All cron actions must be fully threadsafe
-	Action func(string) error
 }
 
 // A Permissions struct enumerates which permissions are available within
@@ -138,14 +129,21 @@ func InitSlack(key string, verificationToken string) *SlackBot {
 
 	bot := &SlackBot{
 		apikey: key,
+		token:  verificationToken,
 		api:    slack.New(key),
 
-		converations: make(map[string]*conversation),
-		topics:       make(map[string]*ConvoTopic),
+		topics: make(map[string]*ConvoTopic),
+		crons:  make(map[string]*CronJob),
 	}
+
 	bot.rtm = bot.api.NewRTM()
-	bot.gm = &globalMessenger{
+	bot.gm = &GlobalMessenger{
 		API: bot.api,
+		dms: make(map[string]*directMessage),
+		listener: &callbackListener{
+			callbacks: make(map[string]*Messenger),
+			mutex:     &sync.Mutex{},
+		},
 	}
 
 	return bot
@@ -161,25 +159,50 @@ func (sb *SlackBot) AddPlugin(plugin SlackPlugin) {
 	config := plugin.Init()
 	if config.FeatureConvo {
 		for _, topic := range config.Topics {
-			if _, ok := sb.topics[topic.ID]; ok {
-				panic("Can't load multiple plugins that use the same conversation ID")
+			if _, ok := sb.topics[topic.Label]; ok {
+				panic("Can't load multiple plugins that use the same conversation label")
 			}
-			sb.topics[topic.ID] = topic
+			sb.topics[topic.Label] = topic
+		}
+	}
+
+	if config.FeatureCron {
+		for _, cron := range config.Jobs {
+			if _, ok := sb.crons[cron.ID]; ok {
+				panic("Can't load multiple plugins that use the same cron ID")
+			}
+			sb.crons[cron.ID] = cron
 		}
 	}
 
 	sb.plugins = append(sb.plugins, plugin)
 }
 
+func (sb *SlackBot) SortedConvoTopics() []string {
+	var labels []string
+	for k := range sb.topics {
+		labels = append(labels, k)
+	}
+
+	sort.Strings(labels)
+
+	return labels
+}
+
 func (sb *SlackBot) refreshData() {
 	sb.fetchChannels()
 	sb.fetchUsers()
-	sb.fetchDMs()
+	sb.fetchIMs()
+
+	sb.initDms()
+
+	sb.gm.mapIds(sb.ims)
 }
 
 // ServeSlack is a blocking function that handles all network transactions
 // for the Slack Bot instance
 func (sb *SlackBot) ServeSlack() error {
+	// TODO(nussey) fix race condition
 	if sb.running {
 		panic("There is already an instance of this Slack Bot running! Create a new instance to run two concurrently!")
 	}
@@ -187,7 +210,9 @@ func (sb *SlackBot) ServeSlack() error {
 	sb.running = true
 
 	go sb.rtm.ManageConnection()
-	go handleInteractiveMessages()
+	go sb.handleInteractiveMessages()
+
+	sb.initCron()
 
 	for msg := range sb.rtm.IncomingEvents {
 		switch ev := msg.Data.(type) {
@@ -199,7 +224,6 @@ func (sb *SlackBot) ServeSlack() error {
 			fmt.Println("We are off!")
 
 		case *slack.MessageEvent:
-			fmt.Println(ev.Channel)
 			if ev.User == sb.rtm.GetInfo().User.ID {
 				continue
 			}
@@ -278,12 +302,12 @@ func (sb *SlackBot) fetchChannels() {
 	}
 }
 
-func (sb *SlackBot) fetchDMs() {
-	sb.dms = make(map[string]*slack.User)
-	dms := sb.rtm.GetInfo().IMs
+func (sb *SlackBot) fetchIMs() {
+	sb.ims = make(map[string]*slack.User)
+	ims := sb.rtm.GetInfo().IMs
 
-	for dm := range dms {
-		sb.dms[dms[dm].ID] = sb.users[dms[dm].User]
+	for im := range ims {
+		sb.ims[ims[im].ID] = sb.users[ims[im].User]
 	}
 }
 
@@ -294,4 +318,18 @@ func randStringRunes(n int) string {
 		b[i] = rngRunes[rand.Intn(len(rngRunes))]
 	}
 	return string(b)
+}
+
+func (sb *SlackBot) initDms() {
+	for _, user := range sb.users {
+		if _, ok := sb.gm.dms[user.Name]; !ok {
+			sb.gm.dms[user.Name] = &directMessage{
+				mutex: &sync.Mutex{},
+
+				currentConvo: nil,
+				convoQueue:   make(chan *conversation, convoQueueSize),
+			}
+			go sb.gm.dms[user.Name].manageDM()
+		}
+	}
 }

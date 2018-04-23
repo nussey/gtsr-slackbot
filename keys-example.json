@@ -1,3 +1,4 @@
 {
-    "SlackAPIKey": "rename to keys.json and put API key here"
+    "SlackAPIKey": "rename to keys.json and put API key here",
+    "SlackVerificationToken": "interactive component verification token here"
 }

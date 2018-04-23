@@ -20,8 +20,8 @@ func (rb *RyanBot) Init() *gtsr.PluginConfig {
 		FeatureConvo: false,
 		Topics:       []*gtsr.ConvoTopic{},
 
-		FeatureChron: false,
-		Jobs:         []*gtsr.CronJob{},
+		FeatureCron: false,
+		Jobs:        []*gtsr.CronJob{},
 	}
 
 }
